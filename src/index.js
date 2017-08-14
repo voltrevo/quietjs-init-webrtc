@@ -78,6 +78,7 @@ const QuietConn = (side, rawSend) => {
           }
         }
       } else {
+        console.log('received startup msg', msg);
         if (sentInitConn) {
           if (msg === 'init-ack') {
             conn = QuietConn('con', (msg) => {
@@ -118,7 +119,12 @@ function ConnectionAcquired(conn) {
   const streamPromise = navigator.mediaDevices.getUserMedia({ video: true, audio: true })
     .then((stream) => {
       document.querySelector('#local-video').srcObject = stream;
-      pc.addStream(stream);
+
+      if (pc.addTrack) {
+        stream.getTracks.forEach(track => pc.addTrack(track));
+      } else {
+        pc.addStream(stream);
+      }
 
       if (conn.side === 'con') {
         pc.createOffer().then((offer) => {
@@ -151,5 +157,13 @@ function ConnectionAcquired(conn) {
     if (evt.candidate) {
       conn.send({ type: 'candidate', content: evt.candidate });
     }
+  });
+
+  pc.addEventListener('addstream', (evt) => {
+    document.querySelector('#remote-video').srcObject = evt.stream;
+  });
+
+  pc.addEventListener('track', (evt) => {
+    document.querySelector('#remote-video').srcObject = evt.streams[0];
   });
 }
