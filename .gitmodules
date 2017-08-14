@@ -1,0 +1,3 @@
+[submodule "quiet-js"]
+	path = quiet-js
+	url = git@github.com:quiet/quiet-js
