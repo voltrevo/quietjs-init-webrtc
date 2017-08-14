@@ -8,11 +8,9 @@ const QuietConn = (side, rawSend) => {
   conn.side = side;
 
   conn.receive = (msg) => {
-    if (!conn.onmsg) {
-      return;
+    if (conn.onmsg) {
+      msg.forEach(m => conn.onmsg(m));
     }
-
-    msg.forEach(m => conn.onmsg(m));
 
     setTimeout(() => {
       if (buf.length === 0) {
@@ -55,6 +53,7 @@ const QuietConn = (side, rawSend) => {
   const transmit = Quiet.transmitter({ profile: 'audible', onFinish: () => {} });
   let conn = null;
   let sentInitConn = false;
+  let recvBuffer = null;
 
   Quiet.receiver({
     profile: 'audible',
@@ -62,19 +61,40 @@ const QuietConn = (side, rawSend) => {
       const msg = Quiet.ab2str(recvPayload);
 
       if (conn) {
-        if (msg[3] === '[' && (msg.substring(0, 3) === 'ack') === sentInitConn) {
-          conn.receive(JSON.parse(msg.substring(3)));
+        if (recvBuffer || (msg[3] === '[' && (msg.substring(0, 3) === 'ack') === sentInitConn)) {
+          if (!recvBuffer) {
+            recvBuffer = new ArrayBuffer(0);
+          }
+
+          recvBuffer = Quiet.mergeab(recvBuffer, recvPayload);
+
+          if (msg[msg.length - 1] === '\n') {
+            const completeMsg = Quiet.ab2str(recvBuffer);
+            recvBuffer = null;
+            conn.receive(JSON.parse(completeMsg.substring(3, completeMsg.length - 1)));
+            console.log('received:', JSON.stringify(completeMsg));
+          } else {
+            console.log('received part:', JSON.stringify(msg));
+          }
         }
       } else {
         if (sentInitConn) {
           if (msg === 'init-ack') {
-            conn = QuietConn('con', msg => transmit.transmit(Quiet.str2ab('con' + JSON.stringify(msg))));
+            conn = QuietConn('con', (msg) => {
+              const strMsg = 'con' + JSON.stringify(msg) + '\n';
+              console.log('sending:', JSON.stringify(strMsg));
+              transmit.transmit(Quiet.str2ab(strMsg));
+            });
             ConnectionAcquired(conn);
           }
         } else {
           if (msg === 'init-con') {
             transmit.transmit(Quiet.str2ab('init-ack'));
-            conn = QuietConn('ack', msg => transmit.transmit(Quiet.str2ab('ack' + JSON.stringify(msg))));
+            conn = QuietConn('ack', (msg) => {
+              const strMsg = 'ack' + JSON.stringify(msg) + '\n';
+              console.log('sending:', JSON.stringify(strMsg));
+              transmit.transmit(Quiet.str2ab(strMsg));
+            });
             ConnectionAcquired(conn);
           }
         }
@@ -93,8 +113,43 @@ const QuietConn = (side, rawSend) => {
 ;
 
 function ConnectionAcquired(conn) {
-  const rand = Math.random();
-  console.log('sending:', rand);
-  conn.send(rand);
-  conn.onmsg = (msg) => console.log('received:', msg);
+  const pc = new RTCPeerConnection({});
+
+  const streamPromise = navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    .then((stream) => {
+      document.querySelector('#local-video').srcObject = stream;
+      pc.addStream(stream);
+
+      if (conn.side === 'con') {
+        pc.createOffer().then((offer) => {
+          pc.setLocalDescription(offer);
+          conn.send({ type: 'offer', content: offer })
+        });
+      }
+    })
+  ;
+
+  conn.onmsg = (msg) => {
+    if (msg.type === 'candidate') {
+      pc.addIceCandidate(msg.content);
+    } else if (msg.type === 'offer') {
+      pc.setRemoteDescription(msg.content);
+
+      streamPromise
+        .then(() => pc.createAnswer())
+        .then((answer) => {
+          pc.setLocalDescription(answer);
+          conn.send({ type: 'answer', content: answer })
+        })
+      ;
+    } else if (msg.type === 'answer') {
+      pc.setRemoteDescription(msg.content);
+    }
+  }
+
+  pc.addEventListener('icecandidate', (evt) => {
+    if (evt.candidate) {
+      conn.send({ type: 'candidate', content: evt.candidate });
+    }
+  });
 }
